@@ -1,0 +1,96 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: ci-cd-pipeline
+spec:
+  workspaces:
+    - name: output
+  params:
+    - name: repo-url
+      type: string
+      description: The URL of the git repository to clone
+    - name: revision
+      type: string
+      description: The revision to clone
+      default: main
+    - name: app-name
+      type: string
+      description: The name of the application
+      default: my-app
+    - name: build-image
+      type: string
+      description: The image to build
+      default: image-registry.openshift-image-registry.svc:5000/<your-namespace>/my-app
+  tasks:
+    # Task 1: Cleanup workspace
+    - name: cleanup
+      taskRef:
+        name: cleanup
+      workspaces:
+        - name: source
+          workspace: output
+    
+    # Task 2: Clone the repository
+    - name: git-clone
+      taskRef:
+        name: git-clone
+      runAfter:
+        - cleanup
+      workspaces:
+        - name: output
+          workspace: output
+      params:
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.revision)
+        - name: deleteExisting
+          value: "true"
+    
+    # Task 3: Run ESLint
+    - name: eslint-linting
+      taskRef:
+        name: eslint
+      runAfter:
+        - git-clone
+      workspaces:
+        - name: source
+          workspace: output
+    
+    # Task 4: Run Jest tests
+    - name: jest-tests
+      taskRef:
+        name: jest-test
+      runAfter:
+        - eslint-linting
+      workspaces:
+        - name: source
+          workspace: output
+    
+    # Task 5: Build image with Buildah
+    - name: buildah
+      taskRef:
+        name: buildah
+      runAfter:
+        - jest-tests
+      workspaces:
+        - name: source
+          workspace: output
+      params:
+        - name: IMAGE
+          value: $(params.build-image)
+        - name: DOCKERFILE
+          value: "./Dockerfile"
+        - name: CONTEXT
+          value: "."
+    
+    # Task 6: Deploy to OpenShift
+    - name: deploy-to-openshift
+      taskRef:
+        name: openshift-client
+      runAfter:
+        - buildah
+      params:
+        - name: SCRIPT
+          value: |
+            oc create deployment $(params.app-name) --image=$(params.build-image) --dry-run=client -o yaml | oc apply -f -
